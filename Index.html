@@ -119,21 +119,12 @@
         </div>
       </div>
 
-      <div class="panel-block">
-        <h2>Cascade usage by package type</h2>
-        <p class="sub">% of redemptions where the item actually redeemed falls below the package's native tier (e.g. a DRINK entitlement redeemed as beer or water), based on Square's real category for each item.</p>
-        <div class="chart-wrap"><canvas id="chartCascade"></canvas></div>
-        <div class="commentary pending" id="commentary-packages-cascade">
-          <span class="tag">Reading</span>
-          AI-generated commentary — pending Phase 2.
-        </div>
-      </div>
-
       <div class="panel-block note-block">
         <h2>Not included yet</h2>
-        <p class="sub">Needs data we don't have wired in yet — flagging instead of faking it:</p>
+        <p class="sub">These need data we don't have wired in yet — flagging instead of faking them:</p>
         <ul>
           <li><strong>Effective discount vs bar price</strong> — needs full menu/bar price per product (Square catalog list price), not currently in Consolidated or Purch_raw.</li>
+          <li><strong>Cascade usage</strong> (e.g. DRINK 5 stepping down to beer/water) — needs each redeemed item_name categorized as spirit/cocktail vs beer vs water, which we don't have a mapping for yet.</li>
         </ul>
       </div>
     </section>

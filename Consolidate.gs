@@ -10,16 +10,13 @@ function runConsolidation() {
   const costMap = buildCostMap_();
   const priceMap = buildPriceMap_();
   const packageMap = buildPackageMap_();
-  const itemCategoryMap = buildItemCategoryMap_();   // catalog_object_id -> category_id (Square)
-  const categoryBucketMap = buildCategoryBucketMap_(); // category_id -> SPIRIT_COCKTAIL/BEER/WATER_SOFT/OTHER
 
   const uniqueOrderIds = [...new Set(redemptions.map(r => r.square_order_id).filter(Boolean))];
   logMessage_('INFO', `Consultando ${uniqueOrderIds.length} órdenes en Square...`);
   const orders = fetchOrdersByIds(uniqueOrderIds);
   const orderIndex = buildOrderIndex_(orders);
 
-  const consolidated = redemptions.map(r =>
-    enrichRedemption_(r, orderIndex, costMap, priceMap, packageMap, itemCategoryMap, categoryBucketMap));
+  const consolidated = redemptions.map(r => enrichRedemption_(r, orderIndex, costMap, priceMap, packageMap));
 
   writeConsolidated_(consolidated);
   logMatchSummary_(consolidated);
@@ -135,27 +132,8 @@ function buildOrderIndex_(orders) {
   return index;
 }
 
-// ── Cascada: bucket "nativo" por tipo de paquete comprado, y su jerarquía ──
-// DRINK entitles anything up to spirit/cocktail; BEER caps at beer; WATER
-// is the floor. Un bucket redimido por debajo del nativo del paquete = cascada.
-const PACKAGE_NATIVE_BUCKET = { DRINK: 'SPIRIT_COCKTAIL', BEER: 'BEER', WATER: 'WATER_SOFT' };
-const BUCKET_RANK = { SPIRIT_COCKTAIL: 3, BEER: 2, WATER_SOFT: 1 };
-
-function resolveCascade_(packageType, redeemedBucket) {
-  const nativeBucket = PACKAGE_NATIVE_BUCKET[packageType];
-  if (!nativeBucket || !redeemedBucket || !(redeemedBucket in BUCKET_RANK)) {
-    return { is_cascade: 'unknown', cascade_direction: null };
-  }
-  const nativeRank = BUCKET_RANK[nativeBucket];
-  const redeemedRank = BUCKET_RANK[redeemedBucket];
-  if (redeemedRank < nativeRank) {
-    return { is_cascade: 'yes', cascade_direction: packageType + ' → ' + redeemedBucket };
-  }
-  return { is_cascade: 'no', cascade_direction: null };
-}
-
-// ── Enriquecer una redención con catalog_object_id, precio, paquete, coste y cascada ──
-function enrichRedemption_(r, orderIndex, costMap, priceMap, packageMap, itemCategoryMap, categoryBucketMap) {
+// ── Enriquecer una redención con catalog_object_id, precio, paquete y coste ──
+function enrichRedemption_(r, orderIndex, costMap, priceMap, packageMap) {
   const result = Object.assign({}, r, {
     catalog_object_id: null,
     match_status: 'no_order_found',      // resolución de producto vía Square
@@ -166,9 +144,6 @@ function enrichRedemption_(r, orderIndex, costMap, priceMap, packageMap, itemCat
     package_type: null,                  // DRINK / BEER / WATER
     package_size: null,                  // 3 / 5
     package_name: null,                  // "5 Drink Pack" — combinado legible
-    item_category_bucket: null,          // SPIRIT_COCKTAIL / BEER / WATER_SOFT / OTHER / REVIEW
-    is_cascade: 'unknown',               // 'yes' / 'no' / 'unknown'
-    cascade_direction: null,             // ej. "DRINK → WATER_SOFT"
     cost_price_resolved: null,           // ya viene neto de tSpoon
     cost_source: 'none',
     margin_resolved: null
@@ -216,18 +191,6 @@ function enrichRedemption_(r, orderIndex, costMap, priceMap, packageMap, itemCat
     result.cost_source = 'cost_mapping';
   }
 
-  // -- Cascada: catalog_object_id → categoría Square → bucket de negocio --
-  if (result.catalog_object_id) {
-    const categoryId = itemCategoryMap[result.catalog_object_id];
-    const bucket = categoryId ? categoryBucketMap[categoryId] : null;
-    result.item_category_bucket = bucket || null;
-    if (result.package_type) {
-      const cascade = resolveCascade_(result.package_type, bucket);
-      result.is_cascade = cascade.is_cascade;
-      result.cascade_direction = cascade.cascade_direction;
-    }
-  }
-
   // -- Margen real: precio NETO de IVA menos coste (ya neto) --
   if (result.calculated_price_net != null && result.cost_price_resolved != null) {
     result.margin_resolved = Math.round((result.calculated_price_net - result.cost_price_resolved) * 100) / 100;
@@ -247,7 +210,6 @@ function writeConsolidated_(rows) {
     'redemption_id', 'ticket_id', 'ticket_code', 'square_order_id',
     'catalog_object_id', 'item_name', 'location_name', 'operational_date',
     'package_type', 'package_size', 'package_name',
-    'item_category_bucket', 'is_cascade', 'cascade_direction',
     'calculated_price_gross', 'calculated_price_net', 'cost_price_resolved', 'margin_resolved',
     'cost_source', 'price_status', 'package_status', 'match_status'
   ];
@@ -261,12 +223,10 @@ function logMatchSummary_(rows) {
   const matchCounts = {};
   const priceCounts = {};
   const packageCounts = {};
-  const cascadeCounts = {};
   rows.forEach(r => {
     matchCounts[r.match_status] = (matchCounts[r.match_status] || 0) + 1;
     priceCounts[r.price_status] = (priceCounts[r.price_status] || 0) + 1;
     packageCounts[r.package_status] = (packageCounts[r.package_status] || 0) + 1;
-    cascadeCounts[r.is_cascade] = (cascadeCounts[r.is_cascade] || 0) + 1;
   });
   Logger.log('── Resumen de match_status (producto, vía Square) ──');
   Object.keys(matchCounts).forEach(k => Logger.log('%s: %s', k, matchCounts[k]));
@@ -274,6 +234,4 @@ function logMatchSummary_(rows) {
   Object.keys(priceCounts).forEach(k => Logger.log('%s: %s', k, priceCounts[k]));
   Logger.log('── Resumen de package_status (paquete, vía Purch_raw) ──');
   Object.keys(packageCounts).forEach(k => Logger.log('%s: %s', k, packageCounts[k]));
-  Logger.log('── Resumen de is_cascade (categoría real vs entitlement) ──');
-  Object.keys(cascadeCounts).forEach(k => Logger.log('%s: %s', k, cascadeCounts[k]));
 }

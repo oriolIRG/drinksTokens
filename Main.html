@@ -49,10 +49,6 @@
     return '€' + Number(n).toLocaleString('en-GB', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
   }
 
-  function round2Client_(n) {
-    return Math.round((n + Number.EPSILON) * 100) / 100;
-  }
-
   function kpi_(label, value, cls) {
     return '<div class="kpi ' + (cls || '') + '"><div class="label">' + label + '</div><div class="value">' + value + '</div></div>';
   }
@@ -91,35 +87,21 @@
   // Locations
   // -------------------------------------------------------------------------
   function renderLocations(data) {
-    // Scatter: avg cost per redemption (y) vs volume (x) — replaces the old
-    // dual-axis bar chart, which made every location look proportional to
-    // its own volume and hid the thing this view exists to show: which
-    // locations cost more per redemption than their activity would justify.
     destroyChart_('chartLocationCosVolume');
     charts['chartLocationCosVolume'] = new Chart(document.getElementById('chartLocationCosVolume'), {
-      type: 'scatter',
+      type: 'bar',
       data: {
-        datasets: [{
-          label: 'Locations',
-          data: data.map(l => ({ x: l.count, y: l.avg_cos_per_redemption, label: l.location_name })),
-          backgroundColor: COLOR_SEA,
-          pointRadius: 7,
-          pointHoverRadius: 9
-        }]
+        labels: data.map(l => l.location_name),
+        datasets: [
+          { label: 'Cost of sale (€)', data: data.map(l => l.cos), backgroundColor: COLOR_SEA, yAxisID: 'y' },
+          { label: 'Redemptions', data: data.map(l => l.count), backgroundColor: COLOR_SUN, yAxisID: 'y1' }
+        ]
       },
       options: {
         responsive: true, maintainAspectRatio: false,
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            callbacks: {
-              label: (ctx) => ctx.raw.label + ': ' + ctx.raw.x + ' redemptions, €' + ctx.raw.y + ' avg cost'
-            }
-          }
-        },
         scales: {
-          x: { title: { display: true, text: 'redemptions (volume)' }, grid: { color: gridColor } },
-          y: { title: { display: true, text: 'avg cost of sale per redemption (€)' }, grid: { color: gridColor } }
+          y: { position: 'left', grid: { color: gridColor }, title: { display: true, text: '€' } },
+          y1: { position: 'right', grid: { display: false }, title: { display: true, text: 'redemptions' } }
         }
       }
     });
@@ -160,34 +142,18 @@
   // Products
   // -------------------------------------------------------------------------
   function renderProducts(data) {
-    // Top 15 + "Other" for the chart only — the full list stays in the table
-    // below. A 30+ item Pareto with one dominant bar is unreadable; the tail
-    // adds no visual information once it's this small relative to #1.
-    const TOP_N = 15;
-    const top = data.slice(0, TOP_N);
-    const rest = data.slice(TOP_N);
-    const chartRows = top.slice();
-    if (rest.length) {
-      const otherCos = rest.reduce((s, p) => s + p.cos, 0);
-      chartRows.push({ item_name: 'Other (' + rest.length + ' products)', cos: round2Client_(otherCos) });
-    }
-    let running = 0;
-    const grandTotal = data.reduce((s, p) => s + p.cos, 0);
-    const cumPct = chartRows.map(p => { running += p.cos; return grandTotal ? round2Client_((running / grandTotal) * 100) : 0; });
-
     destroyChart_('chartProductPareto');
     charts['chartProductPareto'] = new Chart(document.getElementById('chartProductPareto'), {
       data: {
-        labels: chartRows.map(p => p.item_name),
+        labels: data.map(p => p.item_name),
         datasets: [
-          { type: 'bar', label: 'Cost of sale (€)', data: chartRows.map(p => p.cos), backgroundColor: COLOR_SEA, yAxisID: 'y' },
-          { type: 'line', label: 'Cumulative %', data: cumPct, borderColor: COLOR_SUN, backgroundColor: COLOR_SUN, yAxisID: 'y1', tension: 0.25, pointRadius: 3 }
+          { type: 'bar', label: 'Cost of sale (€)', data: data.map(p => p.cos), backgroundColor: COLOR_SEA, yAxisID: 'y' },
+          { type: 'line', label: 'Cumulative %', data: data.map(p => p.cumulative_pct), borderColor: COLOR_SUN, backgroundColor: COLOR_SUN, yAxisID: 'y1', tension: 0.25, pointRadius: 3 }
         ]
       },
       options: {
         responsive: true, maintainAspectRatio: false,
         scales: {
-          x: { ticks: { maxRotation: 45, minRotation: 45 }, grid: { display: false } },
           y: { position: 'left', grid: { color: gridColor }, title: { display: true, text: '€' } },
           y1: { position: 'right', min: 0, max: 100, grid: { display: false }, title: { display: true, text: 'cumulative %' } }
         }
@@ -212,7 +178,6 @@
     google.script.run.withSuccessHandler(renderPackageMargin).withFailureHandler(onError_).getPackageMarginData();
     google.script.run.withSuccessHandler(renderBreakage).withFailureHandler(onError_).getBreakageData();
     google.script.run.withSuccessHandler(renderBreakageTrend).withFailureHandler(onError_).getBreakageTrendData();
-    google.script.run.withSuccessHandler(renderCascade).withFailureHandler(onError_).getCascadeData();
   }
 
   function renderPackageMargin(data) {
@@ -257,33 +222,6 @@
     // Phase 2: getAiCommentary('packages-trend', data)
   }
 
-  function renderCascade(data) {
-    const wrap = document.getElementById('chartCascade').parentElement;
-    if (!data.length) {
-      wrap.innerHTML = '<p class="empty-state">No cascade data yet — check Category_Mapping has Bucket values filled in, and re-run Consolidate.</p>';
-      return;
-    }
-    destroyChart_('chartCascade');
-    charts['chartCascade'] = new Chart(document.getElementById('chartCascade'), {
-      type: 'bar',
-      data: {
-        labels: data.map(d => d.package_type),
-        datasets: [
-          { label: 'Cascaded down %', data: data.map(d => d.cascade_pct), backgroundColor: COLOR_SUN },
-          { label: 'Unknown (uncategorized) %', data: data.map(d => d.unknown_pct), backgroundColor: gridColor }
-        ]
-      },
-      options: {
-        responsive: true, maintainAspectRatio: false,
-        scales: {
-          x: { stacked: true, grid: { display: false } },
-          y: { stacked: true, min: 0, max: 100, grid: { color: gridColor }, title: { display: true, text: '%' } }
-        }
-      }
-    });
-    // Phase 2: getAiCommentary('packages-cascade', data)
-  }
-
   // -------------------------------------------------------------------------
   // Behavior
   // -------------------------------------------------------------------------
@@ -301,11 +239,6 @@
   }
 
   function renderPurchaseWindow(data) {
-    const wrap = document.getElementById('chartPurchaseWindow').parentElement;
-    if (!data.length) {
-      wrap.innerHTML = '<p class="empty-state">No data returned — check the Apps Script execution log for getPurchaseWindowData (likely a ticket_type_name or date format mismatch in Purch_raw).</p>';
-      return;
-    }
     destroyChart_('chartPurchaseWindow');
     charts['chartPurchaseWindow'] = new Chart(document.getElementById('chartPurchaseWindow'), {
       type: 'bar',

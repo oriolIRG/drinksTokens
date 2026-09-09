@@ -40,7 +40,6 @@ function getConsolidatedData_() {
 
   const required = ['redemption_id', 'ticket_id', 'ticket_code', 'item_name', 'catalog_object_id',
     'location_name', 'operational_date', 'package_type', 'package_size', 'package_name',
-    'item_category_bucket', 'is_cascade', 'cascade_direction',
     'calculated_price_net', 'cost_price_resolved', 'margin_resolved', 'cost_source',
     'price_status', 'package_status', 'match_status'];
   required.forEach(col => {
@@ -60,9 +59,6 @@ function getConsolidatedData_() {
     package_type: r[idx['package_type']],
     package_size: r[idx['package_size']],
     package_name: r[idx['package_name']] || 'Unknown package',
-    item_category_bucket: r[idx['item_category_bucket']],
-    is_cascade: r[idx['is_cascade']],
-    cascade_direction: r[idx['cascade_direction']],
     // net_revenue = calculated_price_net (already ex-VAT). Named net_revenue in
     // the webapp to match the financial vocabulary used in the P&L review.
     net_revenue: Number(r[idx['calculated_price_net']]) || 0,
@@ -222,36 +218,6 @@ function getPackageMarginData() {
 }
 
 // ---------------------------------------------------------------------------
-// Packages — cascade usage (package_type entitlement vs item_category_bucket
-// actually redeemed, e.g. a DRINK pack redeemed as beer or water)
-// ---------------------------------------------------------------------------
-
-function getCascadeData() {
-  const rows = getConsolidatedData_();
-  const byPackageType = {};
-
-  rows.forEach(r => {
-    if (!r.package_type) return;
-    if (!byPackageType[r.package_type]) {
-      byPackageType[r.package_type] = { package_type: r.package_type, total: 0, cascaded: 0, unknown: 0 };
-    }
-    const b = byPackageType[r.package_type];
-    b.total += 1;
-    if (r.is_cascade === 'yes') b.cascaded += 1;
-    else if (r.is_cascade === 'unknown') b.unknown += 1;
-  });
-
-  return Object.values(byPackageType).map(b => ({
-    package_type: b.package_type,
-    total: b.total,
-    cascaded: b.cascaded,
-    unknown: b.unknown,
-    cascade_pct: b.total ? round2_((b.cascaded / b.total) * 100) : 0,
-    unknown_pct: b.total ? round2_((b.unknown / b.total) * 100) : 0
-  }));
-}
-
-// ---------------------------------------------------------------------------
 // Packages — breakage (Purch_raw + Rdmp_raw directly, NOT Consolidated:
 // an unredeemed token never generates a Consolidated row by definition)
 // ---------------------------------------------------------------------------
@@ -263,12 +229,11 @@ function getBreakageData() {
 
   const packageByOrder = buildPackageByOrder_(purchRows);
   const byPackage = {};
-  let skippedNotTokenLine = 0, skippedNoPackageMatch = 0;
 
   purchRows.forEach(r => {
-    if (!isTokenLine_(r)) { skippedNotTokenLine++; return; }
+    if (!isTokenLine_(r)) return; // skip the aggregation/parent line
     const pkg = packageByOrder[r.square_order_id];
-    if (!pkg) { skippedNoPackageMatch++; return; }
+    if (!pkg) return; // shouldn't happen — only 6 packages exist
 
     const key = pkg.package_name;
     if (!byPackage[key]) {
@@ -282,9 +247,6 @@ function getBreakageData() {
     b.gross += Number(r.calculated_price_paid) || 0;
     if (!redeemedCodes.has(r.ticket_code)) b.unredeemed += 1;
   });
-
-  Logger.log('getBreakageData: purch_rows_total=%s skipped_not_token_line=%s skipped_no_package_match=%s packages_found=%s',
-    purchRows.length, skippedNotTokenLine, skippedNoPackageMatch, Object.keys(byPackage).length);
 
   const packages = Object.values(byPackage).map(b => ({
     package_name: b.package_name,
@@ -308,17 +270,13 @@ function getBreakageTrendData() {
   const redeemedCodes = new Set(rdmpRows.map(r => r.ticket_code));
 
   const byDate = {};
-  let skippedNotTokenLine = 0;
   purchRows.forEach(r => {
-    if (!isTokenLine_(r)) { skippedNotTokenLine++; return; }
+    if (!isTokenLine_(r)) return;
     const date = r.event_date;
     if (!byDate[date]) byDate[date] = { date: date, units_sold: 0, unredeemed: 0 };
     byDate[date].units_sold += 1;
     if (!redeemedCodes.has(r.ticket_code)) byDate[date].unredeemed += 1;
   });
-
-  Logger.log('getBreakageTrendData: purch_rows_total=%s skipped_not_token_line=%s dates_found=%s',
-    purchRows.length, skippedNotTokenLine, Object.keys(byDate).length);
 
   return Object.values(byDate)
     .map(d => ({
@@ -337,31 +295,24 @@ function getBreakageTrendData() {
 function getPurchaseWindowData() {
   const purchRows = sheetToObjects_('Purch_raw');
   const byPackage = {};
-  let skippedNotParent = 0, skippedNoPackageMatch = 0, skippedNotCompleted = 0, skippedBadDate = 0;
 
   purchRows.forEach(r => {
-    if (Number(r.total_redemptions) <= 1) { skippedNotParent++; return; }
+    // Use PARENT (aggregation) rows only — purchase_date/event_date are the
+    // same for every token in that purchase, counting children would just
+    // duplicate the same window N times per package size.
+    if (Number(r.total_redemptions) <= 1) return;
     const parsed = parsePackageName_(r.ticket_type_name);
-    if (!parsed) { skippedNoPackageMatch++; return; }
-    if (r.payment_status !== 'COMPLETED') { skippedNotCompleted++; return; }
+    if (!parsed) return;
+    if (r.payment_status !== 'COMPLETED') return; // abandoned carts have no real purchase window
 
     const purchaseDate = parseDMY_(r.purchase_date);
     const eventDate = parseDMY_(r.event_date);
-    if (isNaN(purchaseDate) || isNaN(eventDate)) { skippedBadDate++; return; }
-
     const days = Math.round((eventDate - purchaseDate) / 86400000);
+
     const key = parsed.package_name;
     if (!byPackage[key]) byPackage[key] = [];
     byPackage[key].push(days);
   });
-
-  // Diagnostic — check Executions log if this tab renders empty. A high
-  // skippedNoPackageMatch means ticket_type_name doesn't match the expected
-  // pattern; a high skippedBadDate means purchase_date/event_date aren't
-  // parsing (check their actual format in Purch_raw).
-  Logger.log('getPurchaseWindowData: parent_rows_total=%s not_parent=%s no_package_match=%s not_completed=%s bad_date=%s used=%s',
-    purchRows.length, skippedNotParent, skippedNoPackageMatch, skippedNotCompleted, skippedBadDate,
-    Object.values(byPackage).reduce((s, a) => s + a.length, 0));
 
   return Object.keys(byPackage).map(key => {
     const arr = byPackage[key];
@@ -497,12 +448,9 @@ function buildPackageByOrder_(purchRows) {
   return map;
 }
 
-// dd/mm/yyyy -> epoch ms. Accepts either a text string (as in the raw CSV
-// export) or a Date object (if Sheets/BigQuery auto-converts the column) —
-// don't assume which one you'll get.
-function parseDMY_(value) {
-  if (value instanceof Date) return value.getTime();
-  const parts = String(value).split('/');
+// dd/mm/yyyy -> epoch ms, for sorting/subtracting date-only fields from Purch_raw
+function parseDMY_(str) {
+  const parts = String(str).split('/');
   if (parts.length !== 3) return NaN;
   const day = Number(parts[0]), month = Number(parts[1]), year = Number(parts[2]);
   return new Date(year, month - 1, day).getTime();
