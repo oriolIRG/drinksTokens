@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>528 Ibiza — Pre-Sale Packages Analysis</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <?!= includeHtml_('Styles'); ?>
+</head>
+<body>
+
+  <header>
+    <h1>528 Ibiza — Pre-Sale Packages</h1>
+    <div class="meta"><?= userEmail ?></div>
+  </header>
+
+  <nav id="tabs">
+    <button data-tab="overview" class="active">Overview</button>
+    <button data-tab="locations">Locations</button>
+    <button data-tab="products">Products</button>
+    <button data-tab="packages">Packages</button>
+    <button data-tab="behavior">Behavior</button>
+    <button data-tab="quality">Data Quality</button>
+  </nav>
+
+  <main>
+
+    <!-- OVERVIEW -->
+    <section id="overview" class="tab-panel active">
+      <div class="kpi-row" id="overviewKpis"></div>
+      <div class="panel-block">
+        <h2>Top 10 products by cost of sale</h2>
+        <p class="sub">Reduced view — full Pareto is under the Products tab.</p>
+        <div class="chart-wrap"><canvas id="chartOverviewPareto"></canvas></div>
+        <div class="commentary pending" id="commentary-overview">
+          <span class="tag">Reading</span>
+          AI-generated commentary — pending Phase 2.
+        </div>
+      </div>
+    </section>
+
+    <!-- LOCATIONS -->
+    <section id="locations" class="tab-panel">
+      <p class="sub">Points of service inside 528 Ibiza (the venue) — not separate venues.</p>
+      <div class="panel-block">
+        <h2>Cost of sale vs volume by location</h2>
+        <div class="chart-wrap"><canvas id="chartLocationCosVolume"></canvas></div>
+        <div class="commentary pending" id="commentary-locations-1">
+          <span class="tag">Reading</span>
+          AI-generated commentary — pending Phase 2.
+        </div>
+      </div>
+      <div class="two-col">
+        <div class="panel-block">
+          <h2>Average cost of sale per redemption</h2>
+          <div class="chart-wrap"><canvas id="chartLocationAvgCos"></canvas></div>
+        </div>
+        <div class="panel-block">
+          <h2>Contribution by location</h2>
+          <div class="chart-wrap"><canvas id="chartLocationContribution"></canvas></div>
+        </div>
+      </div>
+      <div class="commentary pending" id="commentary-locations-2">
+        <span class="tag">Reading</span>
+        AI-generated commentary — pending Phase 2.
+      </div>
+    </section>
+
+    <!-- PRODUCTS -->
+    <section id="products" class="tab-panel">
+      <div class="panel-block">
+        <h2>Pareto of cost of sale by product</h2>
+        <p class="sub">Bars: cost of sale. Line: cumulative % of total for the period.</p>
+        <div class="chart-wrap"><canvas id="chartProductPareto"></canvas></div>
+        <div class="commentary pending" id="commentary-products-1">
+          <span class="tag">Reading</span>
+          AI-generated commentary — pending Phase 2.
+        </div>
+      </div>
+      <div class="panel-block">
+        <h2>Product detail</h2>
+        <div id="productTableWrap"></div>
+        <div class="commentary pending" id="commentary-products-2">
+          <span class="tag">Reading</span>
+          AI-generated commentary — pending Phase 2.
+        </div>
+      </div>
+    </section>
+
+    <!-- PACKAGES -->
+    <section id="packages" class="tab-panel">
+      <div class="panel-block">
+        <h2>Margin by package</h2>
+        <p class="sub">Redeemed units only. Net revenue is ex-VAT (10%), COS is tSpoon recipe cost.</p>
+        <div id="packageMarginTableWrap"></div>
+        <div class="commentary pending" id="commentary-packages-margin">
+          <span class="tag">Reading</span>
+          AI-generated commentary — pending Phase 2.
+        </div>
+      </div>
+
+      <div class="panel-block">
+        <h2>Breakage by package</h2>
+        <p class="sub">Units sold vs redeemed, from Purch_raw + Rdmp_raw directly (an unredeemed token never appears in Consolidated).</p>
+        <div id="breakageTableWrap"></div>
+        <div class="commentary pending" id="commentary-packages-breakage">
+          <span class="tag">Reading</span>
+          AI-generated commentary — pending Phase 2.
+        </div>
+      </div>
+
+      <div class="panel-block">
+        <h2>Breakage trend by event date</h2>
+        <div class="chart-wrap"><canvas id="chartBreakageTrend"></canvas></div>
+        <div class="commentary pending" id="commentary-packages-trend">
+          <span class="tag">Reading</span>
+          AI-generated commentary — pending Phase 2.
+        </div>
+      </div>
+
+      <div class="panel-block">
+        <h2>Cascade usage by package type</h2>
+        <p class="sub">% of redemptions where the item actually redeemed falls below the package's native tier (e.g. a DRINK entitlement redeemed as beer or water), based on Square's real category for each item.</p>
+        <div class="chart-wrap"><canvas id="chartCascade"></canvas></div>
+        <div class="commentary pending" id="commentary-packages-cascade">
+          <span class="tag">Reading</span>
+          AI-generated commentary — pending Phase 2.
+        </div>
+      </div>
+
+      <div class="panel-block note-block">
+        <h2>Not included yet</h2>
+        <p class="sub">Needs data we don't have wired in yet — flagging instead of faking it:</p>
+        <ul>
+          <li><strong>Effective discount vs bar price</strong> — needs full menu/bar price per product (Square catalog list price), not currently in Consolidated or Purch_raw.</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- BEHAVIOR -->
+    <section id="behavior" class="tab-panel">
+      <div class="kpi-row" id="behaviorKpis"></div>
+      <div class="panel-block">
+        <h2>Purchase window by package</h2>
+        <p class="sub">Average days between purchase and event date. Completed purchases only.</p>
+        <div class="chart-wrap"><canvas id="chartPurchaseWindow"></canvas></div>
+        <div class="commentary pending" id="commentary-behavior-window">
+          <span class="tag">Reading</span>
+          AI-generated commentary — pending Phase 2.
+        </div>
+      </div>
+      <div class="panel-block">
+        <h2>Redemptions by hour of day</h2>
+        <p class="sub">Helps read bar throughput at peak times.</p>
+        <div class="chart-wrap"><canvas id="chartRedemptionHour"></canvas></div>
+        <div class="commentary pending" id="commentary-behavior-hour">
+          <span class="tag">Reading</span>
+          AI-generated commentary — pending Phase 2.
+        </div>
+      </div>
+    </section>
+
+    <!-- DATA QUALITY -->
+    <section id="quality" class="tab-panel">
+      <div class="two-col">
+        <div class="panel-block">
+          <h2>cost_source by location</h2>
+          <div class="chart-wrap"><canvas id="chartCostSource"></canvas></div>
+        </div>
+        <div class="panel-block">
+          <h2>match_status over time</h2>
+          <div class="chart-wrap"><canvas id="chartMatchStatus"></canvas></div>
+        </div>
+      </div>
+      <div class="two-col">
+        <div class="panel-block">
+          <h2>price_status over time</h2>
+          <p class="sub">% of redemptions with net_revenue resolved via the Purch_raw join.</p>
+          <div class="chart-wrap"><canvas id="chartPriceStatus"></canvas></div>
+        </div>
+        <div class="panel-block">
+          <h2>package_status over time</h2>
+          <p class="sub">% of redemptions with package_type/size resolved via Purch_raw.</p>
+          <div class="chart-wrap"><canvas id="chartPackageStatus"></canvas></div>
+        </div>
+      </div>
+      <div class="commentary pending" id="commentary-quality">
+        <span class="tag">Reading</span>
+        AI-generated commentary — pending Phase 2.
+      </div>
+    </section>
+
+  </main>
+
+  <?!= includeHtml_('Main'); ?>
+</body>
+</html>
