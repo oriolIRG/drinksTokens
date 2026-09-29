@@ -6,6 +6,14 @@
   Chart.defaults.font.size = 12;
   Chart.defaults.color = '#12181f';
 
+  // Registered globally (so it's available to any chart), but OFF by
+  // default — otherwise every existing bar/line chart in the app would
+  // suddenly sprout numbers. Turned on per-chart via options.plugins.datalabels.
+  if (typeof ChartDataLabels !== 'undefined') {
+    Chart.register(ChartDataLabels);
+    Chart.defaults.plugins.datalabels = { display: false };
+  }
+
   const charts = {};
   const loadedTabs = new Set();
 
@@ -24,6 +32,7 @@
   function loadTab(tabId) {
     if (loadedTabs.has(tabId)) return;
     loadedTabs.add(tabId);
+    showLoadingForSection_(tabId);
 
     const loaders = {
       overview: () => google.script.run.withSuccessHandler(renderOverview).withFailureHandler(onError_).getOverviewData(),
@@ -36,6 +45,24 @@
     loaders[tabId]();
   }
 
+  // So a slow tab reads as "loading" instead of "broken": every chart-wrap
+  // gets a text overlay (removed automatically by destroyChart_ once the
+  // real chart renders), every *Wrap table container gets a placeholder
+  // (overwritten wholesale once its render function runs).
+  function showLoadingForSection_(sectionId) {
+    const section = document.getElementById(sectionId);
+    if (!section) return;
+    section.querySelectorAll('.chart-wrap').forEach(wrap => {
+      const div = document.createElement('div');
+      div.className = 'loading-indicator';
+      div.textContent = 'Loading…';
+      wrap.appendChild(div);
+    });
+    section.querySelectorAll('[id$="Wrap"]').forEach(wrap => {
+      wrap.innerHTML = '<p class="loading">Loading…</p>';
+    });
+  }
+
   function onError_(err) {
     console.error(err);
     alert('Error loading data: ' + (err && err.message ? err.message : err));
@@ -43,10 +70,19 @@
 
   function destroyChart_(id) {
     if (charts[id]) { charts[id].destroy(); delete charts[id]; }
+    const canvas = document.getElementById(id);
+    if (canvas && canvas.parentElement) {
+      const indicator = canvas.parentElement.querySelector('.loading-indicator');
+      if (indicator) indicator.remove();
+    }
   }
 
   function fmtEUR_(n) {
     return '€' + Number(n).toLocaleString('en-GB', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+  }
+
+  function round2Client_(n) {
+    return Math.round((n + Number.EPSILON) * 100) / 100;
   }
 
   function kpi_(label, value, cls) {
@@ -63,23 +99,10 @@
       kpi_('COS %', data.cos_pct + '%') +
       kpi_('Contribution', fmtEUR_(data.contribution)) +
       kpi_('Margin %', data.margin_pct + '%') +
+      kpi_('Breakage %', data.breakage_pct + '%', data.breakage_pct > 15 ? 'warn' : 'ok') +
+      kpi_('Breakage value (ex-VAT)', fmtEUR_(data.breakage_net_value), 'warn') +
       kpi_('% product matched', data.match_pct + '%', data.match_pct < 100 ? 'warn' : 'ok') +
       kpi_('% price matched', data.price_match_pct + '%', data.price_match_pct < 100 ? 'warn' : 'ok');
-
-    const top = data.top_products;
-    destroyChart_('chartOverviewPareto');
-    charts['chartOverviewPareto'] = new Chart(document.getElementById('chartOverviewPareto'), {
-      type: 'bar',
-      data: {
-        labels: top.map(p => p.item_name),
-        datasets: [{ label: 'Cost of sale (€)', data: top.map(p => p.cos), backgroundColor: COLOR_SEA }]
-      },
-      options: {
-        responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { display: false } },
-        scales: { x: { grid: { display: false } }, y: { grid: { color: gridColor } } }
-      }
-    });
     // Phase 2: google.script.run.getAiCommentary('overview', data)
   }
 
@@ -87,21 +110,35 @@
   // Locations
   // -------------------------------------------------------------------------
   function renderLocations(data) {
+    // Scatter: avg cost per redemption (y) vs volume (x) — replaces the old
+    // dual-axis bar chart, which made every location look proportional to
+    // its own volume and hid the thing this view exists to show: which
+    // locations cost more per redemption than their activity would justify.
     destroyChart_('chartLocationCosVolume');
     charts['chartLocationCosVolume'] = new Chart(document.getElementById('chartLocationCosVolume'), {
-      type: 'bar',
+      type: 'scatter',
       data: {
-        labels: data.map(l => l.location_name),
-        datasets: [
-          { label: 'Cost of sale (€)', data: data.map(l => l.cos), backgroundColor: COLOR_SEA, yAxisID: 'y' },
-          { label: 'Redemptions', data: data.map(l => l.count), backgroundColor: COLOR_SUN, yAxisID: 'y1' }
-        ]
+        datasets: [{
+          label: 'Locations',
+          data: data.map(l => ({ x: l.count, y: l.avg_cos_per_redemption, label: l.location_name })),
+          backgroundColor: COLOR_SEA,
+          pointRadius: 7,
+          pointHoverRadius: 9
+        }]
       },
       options: {
         responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => ctx.raw.label + ': ' + ctx.raw.x + ' redemptions, €' + ctx.raw.y + ' avg cost'
+            }
+          }
+        },
         scales: {
-          y: { position: 'left', grid: { color: gridColor }, title: { display: true, text: '€' } },
-          y1: { position: 'right', grid: { display: false }, title: { display: true, text: 'redemptions' } }
+          x: { title: { display: true, text: 'redemptions (volume)' }, grid: { color: gridColor } },
+          y: { title: { display: true, text: 'avg cost of sale per redemption (€)' }, grid: { color: gridColor } }
         }
       }
     });
@@ -142,84 +179,387 @@
   // Products
   // -------------------------------------------------------------------------
   function renderProducts(data) {
+    // Top 15 + "Other" for the chart only — the full list stays in the table
+    // below. A 30+ item Pareto with one dominant bar is unreadable; the tail
+    // adds no visual information once it's this small relative to #1.
+    const TOP_N = 15;
+    const top = data.slice(0, TOP_N);
+    const rest = data.slice(TOP_N);
+    const chartRows = top.slice();
+    if (rest.length) {
+      const otherCos = rest.reduce((s, p) => s + p.cos, 0);
+      chartRows.push({ item_name: 'Other (' + rest.length + ' products)', cos: round2Client_(otherCos) });
+    }
+    let running = 0;
+    const grandTotal = data.reduce((s, p) => s + p.cos, 0);
+    const cumPct = chartRows.map(p => { running += p.cos; return grandTotal ? round2Client_((running / grandTotal) * 100) : 0; });
+
     destroyChart_('chartProductPareto');
     charts['chartProductPareto'] = new Chart(document.getElementById('chartProductPareto'), {
       data: {
-        labels: data.map(p => p.item_name),
+        labels: chartRows.map(p => p.item_name),
         datasets: [
-          { type: 'bar', label: 'Cost of sale (€)', data: data.map(p => p.cos), backgroundColor: COLOR_SEA, yAxisID: 'y' },
-          { type: 'line', label: 'Cumulative %', data: data.map(p => p.cumulative_pct), borderColor: COLOR_SUN, backgroundColor: COLOR_SUN, yAxisID: 'y1', tension: 0.25, pointRadius: 3 }
+          { type: 'bar', label: 'Cost of sale (€)', data: chartRows.map(p => p.cos), backgroundColor: COLOR_SEA, yAxisID: 'y' },
+          { type: 'line', label: 'Cumulative %', data: cumPct, borderColor: COLOR_SUN, backgroundColor: COLOR_SUN, yAxisID: 'y1', tension: 0.25, pointRadius: 3 }
         ]
       },
       options: {
         responsive: true, maintainAspectRatio: false,
         scales: {
+          x: { ticks: { maxRotation: 45, minRotation: 45 }, grid: { display: false } },
           y: { position: 'left', grid: { color: gridColor }, title: { display: true, text: '€' } },
           y1: { position: 'right', min: 0, max: 100, grid: { display: false }, title: { display: true, text: 'cumulative %' } }
         }
       }
     });
 
-    const rows = data.map(p =>
-      '<tr><td>' + p.item_name + '</td><td>' + p.count + '</td><td>' + fmtEUR_(p.cos) +
-      '</td><td>' + fmtEUR_(p.avg_unit_cost) + '</td><td>' + fmtEUR_(p.min_unit_cost) + ' – ' + fmtEUR_(p.max_unit_cost) + '</td></tr>'
-    ).join('');
-
-    document.getElementById('productTableWrap').innerHTML =
-      '<table><thead><tr><th>Product</th><th>Redemptions</th><th>Cost of sale</th><th>Avg unit cost</th><th>Cost range</th></tr></thead>' +
-      '<tbody>' + rows + '</tbody></table>';
+    productTableData_ = data;
+    initProductControls_();
+    renderProductTable_();
     // Phase 2: getAiCommentary('products', data)
   }
 
+  let productTableData_ = [];
+  let productSortField_ = 'cos';
+  let productSortDir_ = -1; // -1 desc, 1 asc
+  let productShowAll_ = false;
+
+  const PRODUCT_COLUMNS_ = [
+    { field: 'item_name', label: 'Product' },
+    { field: 'count', label: 'Redemptions' },
+    { field: 'net_revenue', label: 'Net revenue' },
+    { field: 'cos', label: 'Cost of sale' },
+    { field: 'contribution', label: 'Contribution' },
+    { field: 'margin_pct', label: 'Margin %' },
+    { field: 'avg_unit_cost', label: 'Avg unit cost' },
+    { field: 'cost_range', label: 'Cost range' }
+  ];
+
+  function initProductControls_() {
+    document.getElementById('productSearchInput').oninput = renderProductTable_;
+    const btn = document.getElementById('productShowAllBtn');
+    btn.onclick = () => {
+      productShowAll_ = !productShowAll_;
+      btn.textContent = productShowAll_ ? 'Show top 10' : 'Show all';
+      btn.classList.toggle('active', productShowAll_);
+      renderProductTable_();
+    };
+  }
+
+  function renderProductTable_() {
+    const term = document.getElementById('productSearchInput').value.trim().toLowerCase();
+    let rows = productTableData_.filter(p => !term || p.item_name.toLowerCase().indexOf(term) !== -1);
+
+    rows = rows.slice().sort((a, b) => {
+      let av, bv;
+      if (productSortField_ === 'cost_range') {
+        av = a.max_unit_cost - a.min_unit_cost;
+        bv = b.max_unit_cost - b.min_unit_cost;
+      } else {
+        av = a[productSortField_];
+        bv = b[productSortField_];
+      }
+      if (av < bv) return -1 * productSortDir_;
+      if (av > bv) return 1 * productSortDir_;
+      return 0;
+    });
+
+    const visible = productShowAll_ ? rows : rows.slice(0, 10);
+
+    const headerHtml = PRODUCT_COLUMNS_.map(c => {
+      const arrow = productSortField_ === c.field ? (productSortDir_ === 1 ? '▲' : '▼') : '';
+      return '<th data-field="' + c.field + '">' + c.label + ' <span class="sort-arrow">' + arrow + '</span></th>';
+    }).join('');
+
+    const bodyHtml = visible.map(p => {
+      const rangeDiffers = p.min_unit_cost !== p.max_unit_cost;
+      return '<tr><td>' + p.item_name + '</td><td>' + p.count + '</td><td>' + fmtEUR_(p.net_revenue) +
+        '</td><td>' + fmtEUR_(p.cos) + '</td><td>' + fmtEUR_(p.contribution) + '</td><td>' + p.margin_pct + '%' +
+        '</td><td>' + fmtEUR_(p.avg_unit_cost) + '</td><td' + (rangeDiffers ? ' style="color:var(--red)"' : '') + '>' +
+        fmtEUR_(p.min_unit_cost) + ' – ' + fmtEUR_(p.max_unit_cost) + '</td></tr>';
+    }).join('');
+
+    document.getElementById('productTableWrap').innerHTML =
+      '<table><thead><tr>' + headerHtml + '</tr></thead><tbody>' + bodyHtml + '</tbody></table>' +
+      '<p class="sub" style="margin-top:8px;">Showing ' + visible.length + ' of ' + rows.length + ' products' +
+      (term ? ' matching "' + term + '"' : '') + '.</p>';
+
+    document.querySelectorAll('#productTableWrap th[data-field]').forEach(th => {
+      th.onclick = () => {
+        const field = th.dataset.field;
+        if (productSortField_ === field) {
+          productSortDir_ *= -1;
+        } else {
+          productSortField_ = field;
+          productSortDir_ = field === 'item_name' ? 1 : -1;
+        }
+        renderProductTable_();
+      };
+    });
+  }
+
   // -------------------------------------------------------------------------
-  // Packages — three server calls, rendered together
+  // Packages — one server call for the whole tab (see getPackagesTabData in
+  // Code.gs). This used to be 4 separate google.script.run calls, each
+  // re-reading the same sheets — that redundant server-side work was the
+  // real cause of "the charts take forever to load".
   // -------------------------------------------------------------------------
   function loadPackagesTab_() {
-    google.script.run.withSuccessHandler(renderPackageMargin).withFailureHandler(onError_).getPackageMarginData();
-    google.script.run.withSuccessHandler(renderBreakage).withFailureHandler(onError_).getBreakageData();
-    google.script.run.withSuccessHandler(renderBreakageTrend).withFailureHandler(onError_).getBreakageTrendData();
+    google.script.run.withSuccessHandler(function (data) {
+      renderPackageOverview(data.overview);
+      renderPackageQuadrant(data.overview);
+      renderCascade(data.cascade);
+      windowBreakageBucketData_ = data.windowBreakage;
+      windowBreakageDailyData_ = data.windowBreakageDaily;
+      initWindowBreakageToggle_();
+      renderWindowBreakage();
+      renderLocationPackageHeatmap(data.locationMix);
+    }).withFailureHandler(onError_).getPackagesTabData();
   }
 
-  function renderPackageMargin(data) {
+  function renderPackageOverview(data) {
+    const dash_ = (v, suffix) => v == null ? '—' : v + (suffix || '');
     const rows = data.map(p =>
-      '<tr><td>' + p.package_name + '</td><td>' + p.redeemed + '</td><td>' + fmtEUR_(p.net_revenue) +
-      '</td><td>' + fmtEUR_(p.cos) + '</td><td>' + p.cos_pct + '%</td><td>' + fmtEUR_(p.contribution) +
-      '</td><td>' + p.margin_pct + '%</td></tr>'
+      '<tr><td>' + p.package_name + '</td>' +
+      '<td>' + dash_(p.units_sold) + '</td>' +
+      '<td>' + dash_(p.pct_unredeemed, '%') + '</td>' +
+      '<td>' + (p.net_revenue != null ? fmtEUR_(p.net_revenue) : '—') + '</td>' +
+      '<td>' + dash_(p.margin_pct, '%') + '</td>' +
+      '<td>' + dash_(p.cascade_pct, '%') + '</td>' +
+      '<td>' + dash_(p.avg_days_before_event) + '</td></tr>'
     ).join('');
 
-    document.getElementById('packageMarginTableWrap').innerHTML =
-      '<table><thead><tr><th>Package</th><th>Redeemed</th><th>Net revenue</th><th>COS</th><th>COS %</th><th>Contribution</th><th>Margin %</th></tr></thead>' +
+    document.getElementById('packageOverviewTableWrap').innerHTML =
+      '<table><thead><tr><th>Package</th><th>Units sold</th><th>% Unredeemed</th><th>Net revenue</th>' +
+      '<th>Margin %</th><th>Cascade %</th><th>Avg. days purchase→event</th></tr></thead>' +
       '<tbody>' + rows + '</tbody></table>';
-    // Phase 2: getAiCommentary('packages-margin', data)
+    // Phase 2: getAiCommentary('packages-overview', data)
   }
 
-  function renderBreakage(data) {
-    const rows = data.map(p =>
-      '<tr><td>' + p.package_name + '</td><td>' + p.units_sold + '</td><td>' + p.unredeemed +
-      '</td><td>' + p.pct_unredeemed + '%</td><td>' + fmtEUR_(p.gross) + '</td><td>' + fmtEUR_(p.net) + '</td></tr>'
-    ).join('');
+  function renderPackageQuadrant(data) {
+    const wrap = document.getElementById('chartPackageQuadrant').parentElement;
+    const plottable = data.filter(p => p.pct_unredeemed != null && p.margin_pct != null);
+    if (!plottable.length) {
+      wrap.innerHTML = '<p class="empty-state">Not enough data yet to plot margin vs breakage.</p>';
+      return;
+    }
+    destroyChart_('chartPackageQuadrant');
 
-    document.getElementById('breakageTableWrap').innerHTML =
-      '<table><thead><tr><th>Package</th><th>Units sold</th><th>Unredeemed</th><th>% units</th><th>Gross</th><th>Net</th></tr></thead>' +
-      '<tbody>' + rows + '</tbody></table>';
-    // Phase 2: getAiCommentary('packages-breakage', data)
+    const maxUnits = Math.max.apply(null, plottable.map(p => p.units_sold || 0)) || 1;
+    const typeColors = { DRINK: COLOR_SEA, BEER: COLOR_SUN, WATER: '#a3402f' };
+    const byType = {};
+    plottable.forEach(p => {
+      const t = p.package_type || 'OTHER';
+      if (!byType[t]) byType[t] = [];
+      byType[t].push({
+        x: p.pct_unredeemed,
+        y: p.margin_pct,
+        r: 7 + 18 * Math.sqrt((p.units_sold || 0) / maxUnits),
+        package_name: p.package_name
+      });
+    });
+
+    const datasets = Object.keys(byType).map(t => ({
+      label: t,
+      data: byType[t],
+      backgroundColor: (typeColors[t] || '#6b6459') + 'aa'
+    }));
+
+    charts['chartPackageQuadrant'] = new Chart(document.getElementById('chartPackageQuadrant'), {
+      type: 'bubble',
+      data: { datasets: datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          tooltip: {
+            callbacks: {
+              label: ctx => ctx.raw.package_name + ': ' + ctx.raw.x + '% unredeemed, ' + ctx.raw.y + '% margin'
+            }
+          }
+        },
+        scales: {
+          x: { title: { display: true, text: '% unredeemed (breakage)' }, grid: { color: gridColor } },
+          y: { title: { display: true, text: 'Margin %' }, grid: { color: gridColor } }
+        }
+      }
+    });
+    // Phase 2: getAiCommentary('packages-quadrant', data)
   }
 
-  function renderBreakageTrend(data) {
-    destroyChart_('chartBreakageTrend');
-    charts['chartBreakageTrend'] = new Chart(document.getElementById('chartBreakageTrend'), {
+  function renderCascade(rawData) {
+    // WATER packages can't cascade — WATER_SOFT is already the floor of the
+    // bucket hierarchy, nothing redeems "below" it — so they'd only ever
+    // show a flat 0% bar here. Excluding them from this chart/table only;
+    // the underlying data (and the Packages scorecard) is untouched.
+    const data = rawData.filter(d => d.package_type !== 'WATER');
+    const wrap = document.getElementById('chartCascade').parentElement;
+    if (!data.length) {
+      wrap.innerHTML = '<p class="empty-state">No cascade data yet — check Category_Mapping has Bucket values filled in, and re-run Consolidate.</p>';
+      document.getElementById('cascadeContributionWrap').innerHTML = '';
+      return;
+    }
+    destroyChart_('chartCascade');
+
+    // Auto-scale instead of a fixed 0-100 axis: cascade rates are typically
+    // single digits, so a 0-100 range flattens every bar to a sliver.
+    // Some headroom above the tallest stacked bar keeps labels from
+    // touching the top edge.
+    const maxStacked = Math.max.apply(null, data.map(d => d.cascade_pct + d.unknown_pct));
+    const yMax = Math.max(5, Math.ceil((maxStacked * 1.35) / 5) * 5);
+
+    charts['chartCascade'] = new Chart(document.getElementById('chartCascade'), {
       type: 'bar',
       data: {
-        labels: data.map(d => d.date),
-        datasets: [{ label: '% unredeemed', data: data.map(d => d.pct_unredeemed), backgroundColor: COLOR_SUN }]
+        labels: data.map(d => d.package_name),
+        datasets: [
+          {
+            label: 'Cascaded down %', data: data.map(d => d.cascade_pct), backgroundColor: COLOR_SUN,
+            datalabels: {
+              display: ctx => ctx.dataset.data[ctx.dataIndex] > 0,
+              anchor: 'center', align: 'center', color: '#fff', font: { size: 11, weight: '600' },
+              formatter: v => v + '%'
+            }
+          },
+          {
+            label: 'Unknown (uncategorized) %', data: data.map(d => d.unknown_pct), backgroundColor: gridColor,
+            datalabels: {
+              display: ctx => ctx.dataset.data[ctx.dataIndex] > 0,
+              anchor: 'center', align: 'center', color: '#6b6459', font: { size: 11 },
+              formatter: v => v + '%'
+            }
+          }
+        ]
       },
       options: {
         responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { display: false } },
-        scales: { y: { min: 0, grid: { color: gridColor }, title: { display: true, text: '%' } }, x: { grid: { display: false } } }
+        scales: {
+          x: { stacked: true, grid: { display: false } },
+          y: { stacked: true, min: 0, max: yMax, grid: { color: gridColor }, title: { display: true, text: '%' } }
+        }
       }
     });
-    // Phase 2: getAiCommentary('packages-trend', data)
+
+    const withCascade = data.filter(d => d.cascaded > 0);
+    if (withCascade.length) {
+      const rows = withCascade.map(d =>
+        '<tr><td>' + d.package_name + '</td><td>' + fmtEUR_(d.avg_contribution_cascaded) +
+        '</td><td>' + (d.avg_contribution_other != null ? fmtEUR_(d.avg_contribution_other) : '—') + '</td></tr>'
+      ).join('');
+      document.getElementById('cascadeContributionWrap').innerHTML =
+        '<p class="sub" style="margin-top:14px;">Avg. contribution per redemption, cascaded vs not — shows whether cascade is actually costing margin.</p>' +
+        '<table><thead><tr><th>Package</th><th>Avg. contribution (cascaded)</th><th>Avg. contribution (non-cascaded)</th></tr></thead>' +
+        '<tbody>' + rows + '</tbody></table>';
+    } else {
+      document.getElementById('cascadeContributionWrap').innerHTML = '';
+    }
+    // Phase 2: getAiCommentary('packages-cascade', data)
+  }
+
+  let windowBreakageBucketData_ = [];
+  let windowBreakageDailyData_ = [];
+  let windowBreakageView_ = 'buckets'; // 'buckets' | 'daily'
+
+  function initWindowBreakageToggle_() {
+    document.querySelectorAll('#windowBreakageToggle button').forEach(btn => {
+      btn.onclick = () => {
+        windowBreakageView_ = btn.dataset.view;
+        document.querySelectorAll('#windowBreakageToggle button').forEach(b => b.classList.toggle('active', b === btn));
+        renderWindowBreakage();
+      };
+    });
+  }
+
+  function renderWindowBreakage() {
+    const wrap = document.getElementById('chartWindowBreakage').parentElement;
+
+    if (windowBreakageView_ === 'daily') {
+      if (!windowBreakageDailyData_.length) {
+        wrap.innerHTML = '<p class="empty-state">No purchase-window data yet.</p>';
+        return;
+      }
+      destroyChart_('chartWindowBreakage');
+      const d = windowBreakageDailyData_;
+      charts['chartWindowBreakage'] = new Chart(document.getElementById('chartWindowBreakage'), {
+        type: 'line',
+        data: {
+          labels: d.map(p => p.days === 20 ? '20+' : String(p.days)),
+          datasets: [{
+            label: '% unredeemed (all packages)',
+            data: d.map(p => p.pct_unredeemed),
+            borderColor: COLOR_SUN, backgroundColor: COLOR_SUN, tension: 0.25,
+            pointRadius: d.map(p => 3 + Math.min(6, Math.sqrt(p.units_sold) / 3))
+          }]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: {
+            tooltip: { callbacks: { label: ctx => ctx.raw + '% unredeemed (n=' + d[ctx.dataIndex].units_sold + ')' } }
+          },
+          scales: {
+            x: { title: { display: true, text: 'Days between purchase and event' }, grid: { display: false } },
+            y: { min: 0, grid: { color: gridColor }, title: { display: true, text: '% unredeemed' } }
+          }
+        }
+      });
+      return;
+    }
+
+    if (!windowBreakageBucketData_.length) {
+      wrap.innerHTML = '<p class="empty-state">No purchase-window data yet.</p>';
+      return;
+    }
+    destroyChart_('chartWindowBreakage');
+    const data = windowBreakageBucketData_;
+    const bucketOrder = ['0-1 days', '2-7 days', '8+ days'];
+    const packages = Array.from(new Set(data.map(d => d.package_name))).sort();
+    const palette = [COLOR_SEA, COLOR_SUN, '#a3402f', '#6b6459', '#7c9c8f', '#8a6fae'];
+
+    const datasets = packages.map((pkg, i) => ({
+      label: pkg,
+      backgroundColor: palette[i % palette.length],
+      data: bucketOrder.map(b => {
+        const row = data.find(d => d.package_name === pkg && d.bucket === b);
+        return row ? row.pct_unredeemed : null;
+      })
+    }));
+
+    charts['chartWindowBreakage'] = new Chart(document.getElementById('chartWindowBreakage'), {
+      type: 'bar',
+      data: { labels: bucketOrder, datasets: datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        scales: {
+          x: { grid: { display: false } },
+          y: { min: 0, grid: { color: gridColor }, title: { display: true, text: '% unredeemed' } }
+        }
+      }
+    });
+    // Phase 2: getAiCommentary('packages-window', data)
+  }
+
+  function renderLocationPackageHeatmap(data) {
+    if (!data.locations.length) {
+      document.getElementById('packageLocationHeatmapWrap').innerHTML =
+        '<p class="empty-state">No location data yet.</p>';
+      return;
+    }
+    const packages = data.packages;
+    let html = '<table><thead><tr><th>Location</th>' +
+      packages.map(p => '<th>' + p + '</th>').join('') + '<th>Total</th></tr></thead><tbody>';
+
+    data.locations.forEach(l => {
+      html += '<tr><td>' + l.location_name + '</td>' +
+        packages.map(p => {
+          const pct = l.shares[p] || 0;
+          const alpha = Math.min(pct / 40, 1); // caps visual intensity at 40% share
+          return '<td style="background:rgba(28,95,102,' + alpha.toFixed(2) + ')">' + pct + '%</td>';
+        }).join('') +
+        '<td>' + l.total.toLocaleString('en-GB') + '</td></tr>';
+    });
+
+    html += '</tbody></table>';
+    document.getElementById('packageLocationHeatmapWrap').innerHTML = html;
+    // Phase 2: getAiCommentary('packages-location', data)
   }
 
   // -------------------------------------------------------------------------
@@ -228,7 +568,11 @@
   function loadBehaviorTab_() {
     google.script.run.withSuccessHandler(renderCartAbandonment).withFailureHandler(onError_).getCartAbandonmentData();
     google.script.run.withSuccessHandler(renderPurchaseWindow).withFailureHandler(onError_).getPurchaseWindowData();
-    google.script.run.withSuccessHandler(renderRedemptionHour).withFailureHandler(onError_).getRedemptionHourData();
+    google.script.run.withSuccessHandler(function (data) {
+      hourBreakdownData_ = data;
+      initHourControls_();
+      renderRedemptionHour();
+    }).withFailureHandler(onError_).getRedemptionHourBreakdown();
   }
 
   function renderCartAbandonment(data) {
@@ -239,6 +583,11 @@
   }
 
   function renderPurchaseWindow(data) {
+    const wrap = document.getElementById('chartPurchaseWindow').parentElement;
+    if (!data.length) {
+      wrap.innerHTML = '<p class="empty-state">No data returned — check the Apps Script execution log for getPurchaseWindowData (likely a ticket_type_name or date format mismatch in Purch_raw).</p>';
+      return;
+    }
     destroyChart_('chartPurchaseWindow');
     charts['chartPurchaseWindow'] = new Chart(document.getElementById('chartPurchaseWindow'), {
       type: 'bar',
@@ -255,27 +604,103 @@
     // Phase 2: getAiCommentary('behavior-window', data)
   }
 
-  function renderRedemptionHour(data) {
+  // Redemption-hour: raw granular data fetched once (hour × day_of_week ×
+  // package_type). Two independent controls: package-type toggles define
+  // the SERIES drawn (one line per active type, or one combined "All types"
+  // line if none are active); day toggles are a FILTER only — selected days
+  // are OR'd together into whichever series are showing, they never add
+  // lines of their own. No day selected = every day included.
+  let hourBreakdownData_ = [];
+  let hourSelectedDays_ = new Set();  // filter: empty = all days included
+  let hourSelectedTypes_ = new Set(); // series: empty = one combined "All types" line
+
+  const TYPE_LABELS_ = { ALL: 'All types', DRINK: 'Drink', BEER: 'Beer', WATER: 'Water' };
+  const TYPE_COLORS_ = { ALL: '#2d2a26', DRINK: COLOR_SEA, BEER: COLOR_SUN, WATER: '#a3402f' };
+
+  // Events run 16:00 to ~4-5am the next calendar day — a plain 0:00-23:00
+  // axis splits one continuous night in half. This order (16:00 ... 23:00,
+  // 0:00 ... 15:00) keeps a night's curve as one unbroken line.
+  const HOUR_ORDER_ = [16, 17, 18, 19, 20, 21, 22, 23, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+
+  function initHourControls_() {
+    document.querySelectorAll('#hourDayToggles .day-toggle').forEach(btn => {
+      btn.onclick = () => {
+        const day = Number(btn.dataset.day);
+        if (hourSelectedDays_.has(day)) hourSelectedDays_.delete(day); else hourSelectedDays_.add(day);
+        btn.classList.toggle('active');
+        renderRedemptionHour();
+      };
+    });
+    document.querySelectorAll('#hourTypeToggles .day-toggle').forEach(btn => {
+      btn.onclick = () => {
+        const type = btn.dataset.type;
+        if (hourSelectedTypes_.has(type)) hourSelectedTypes_.delete(type); else hourSelectedTypes_.add(type);
+        btn.classList.toggle('active');
+        renderRedemptionHour();
+      };
+    });
+  }
+
+  function renderRedemptionHour() {
+    if (!hourBreakdownData_.length) {
+      document.getElementById('chartRedemptionHour').parentElement.innerHTML =
+        '<p class="empty-state">No redemption-hour data yet.</p>';
+      return;
+    }
     destroyChart_('chartRedemptionHour');
+
+    const types = hourSelectedTypes_.size ? Array.from(hourSelectedTypes_) : ['ALL'];
+
+    const datasets = types.map(type => {
+      const hoursByHour = new Array(24).fill(0);
+      hourBreakdownData_.forEach(d => {
+        const dayOk = hourSelectedDays_.size === 0 || hourSelectedDays_.has(d.day_of_week);
+        const typeOk = type === 'ALL' || d.package_type === type;
+        if (dayOk && typeOk) hoursByHour[d.hour] += d.count;
+      });
+      const color = TYPE_COLORS_[type];
+      return {
+        label: TYPE_LABELS_[type],
+        data: HOUR_ORDER_.map(h => hoursByHour[h]),
+        borderColor: color,
+        backgroundColor: color,
+        tension: 0.25,
+        pointRadius: 2
+      };
+    });
+
     charts['chartRedemptionHour'] = new Chart(document.getElementById('chartRedemptionHour'), {
-      type: 'bar',
+      type: 'line',
       data: {
-        labels: data.map(d => d.hour + ':00'),
-        datasets: [{ label: 'Redemptions', data: data.map(d => d.count), backgroundColor: COLOR_SUN }]
+        labels: HOUR_ORDER_.map(h => h + ':00'),
+        datasets: datasets
       },
       options: {
         responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { display: false } },
-        scales: { x: { grid: { display: false } }, y: { grid: { color: gridColor } } }
+        scales: {
+          x: { grid: { display: false } },
+          y: { min: 0, grid: { color: gridColor }, title: { display: true, text: 'Redemptions' } }
+        }
       }
     });
-    // Phase 2: getAiCommentary('behavior-hour', data)
+    // Phase 2: getAiCommentary('behavior-hour', { days: Array.from(hourSelectedDays_), package_types: types })
   }
 
   // -------------------------------------------------------------------------
   // Data Quality
   // -------------------------------------------------------------------------
   function renderQuality(data) {
+    const cat = data.cos_pct_by_category;
+    const rows = cat.map(c => {
+      const warn = c.cos_pct <= 0 || c.cos_pct >= 100;
+      return '<tr' + (warn ? ' style="color:var(--red)"' : '') + '><td>' + c.category + '</td><td>' +
+        c.count.toLocaleString('en-GB') + '</td><td>' + fmtEUR_(c.net_revenue) + '</td><td>' +
+        fmtEUR_(c.cos) + '</td><td>' + c.cos_pct + '%</td></tr>';
+    }).join('');
+    document.getElementById('cosPctByCategoryWrap').innerHTML =
+      '<table><thead><tr><th>Category</th><th>Redemptions</th><th>Net revenue</th><th>COS</th><th>COS %</th></tr></thead>' +
+      '<tbody>' + rows + '</tbody></table>';
+
     const locations = data.locations;
     const sources = data.sources;
     const datasetsBySource = sources.map((src, i) => ({

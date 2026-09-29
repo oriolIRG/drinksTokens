@@ -62,6 +62,26 @@ function fetchOrdersByIds(orderIds) {
   return orders;
 }
 
+// ── Búsqueda genérica de catálogo por tipo (ITEM, ITEM_VARIATION, CATEGORY...) ──
+// La usa CategoryMap.gs para resolver categorías de producto. `key` se
+// mantiene en la firma por compatibilidad pero no se usa: la autenticación
+// ya la resuelve _sqHeaders()/getSquareToken(), igual que el resto de este
+// archivo — mismo patrón de paginación que el searchType() interno de
+// fetchCatalog() de abajo.
+function searchCatalogByType_(type, key) {
+  const objs = [];
+  let cursor;
+  do {
+    const body = { object_types: [type], include_deleted_objects: true, limit: 1000 };
+    if (cursor) body.cursor = cursor;
+    const d = _sqPost('/catalog/search', body);
+    if (d.errors) logMessage_('ERROR', 'searchCatalogByType_(' + type + '): ' + JSON.stringify(d.errors));
+    if (d.objects) objs.push(...d.objects);
+    cursor = d.cursor;
+  } while (cursor);
+  return objs;
+}
+
 // ── Catálogo (igual que tu versión probada) ──────────────────────────
 function fetchCatalog() {
   function searchType(type) {
