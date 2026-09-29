@@ -6,6 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>528 Ibiza — Pre-Sale Packages Analysis</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-plugin-datalabels/2.2.0/chartjs-plugin-datalabels.min.js"></script>
   <?!= includeHtml_('Styles'); ?>
 </head>
 <body>
@@ -29,14 +30,10 @@
     <!-- OVERVIEW -->
     <section id="overview" class="tab-panel active">
       <div class="kpi-row" id="overviewKpis"></div>
-      <div class="panel-block">
-        <h2>Top 10 products by cost of sale</h2>
-        <p class="sub">Reduced view — full Pareto is under the Products tab.</p>
-        <div class="chart-wrap"><canvas id="chartOverviewPareto"></canvas></div>
-        <div class="commentary pending" id="commentary-overview">
-          <span class="tag">Reading</span>
-          AI-generated commentary — pending Phase 2.
-        </div>
+      <p class="sub">Breakage % counts only past events — a token for a future event hasn't had its chance to be redeemed yet, so it isn't counted against the venue. Full product-level detail lives under the Products tab.</p>
+      <div class="commentary pending" id="commentary-overview">
+        <span class="tag">Reading</span>
+        AI-generated commentary — pending Phase 2.
       </div>
     </section>
 
@@ -45,6 +42,7 @@
       <p class="sub">Points of service inside 528 Ibiza (the venue) — not separate venues.</p>
       <div class="panel-block">
         <h2>Cost of sale vs volume by location</h2>
+        <p class="sub">Each dot is one location. Y-axis: <strong>average</strong> cost of sale per redeemed token (not total) — i.e. how expensive the typical drink served there is to make. X-axis: how many redemptions happened there. A location high on the y-axis but low on the x-axis serves few but costly drinks; worth a look if that's not by design.</p>
         <div class="chart-wrap"><canvas id="chartLocationCosVolume"></canvas></div>
         <div class="commentary pending" id="commentary-locations-1">
           <span class="tag">Reading</span>
@@ -54,10 +52,12 @@
       <div class="two-col">
         <div class="panel-block">
           <h2>Average cost of sale per redemption</h2>
+          <p class="sub">Same average-per-token metric as the chart above, ranked location by location.</p>
           <div class="chart-wrap"><canvas id="chartLocationAvgCos"></canvas></div>
         </div>
         <div class="panel-block">
           <h2>Contribution by location</h2>
+          <p class="sub">Total € contribution generated at each location (net revenue − cost of sale, summed across all its redemptions) — an absolute amount, not a margin %. A location can rank high here just from volume even with a modest margin %.</p>
           <div class="chart-wrap"><canvas id="chartLocationContribution"></canvas></div>
         </div>
       </div>
@@ -71,7 +71,7 @@
     <section id="products" class="tab-panel">
       <div class="panel-block">
         <h2>Pareto of cost of sale by product</h2>
-        <p class="sub">Bars: cost of sale. Line: cumulative % of total for the period.</p>
+        <p class="sub">Which products drive most of what the venue spends making drinks (cost, not revenue). Bars: total € cost of sale per product, largest first. Line: running % of the <strong>total</strong> cost of sale covered once you include everything up to that point — e.g. if the line hits 80% by the 5th bar, those 5 products account for 80% of all drink-making cost. Useful for spotting which few products concentrate most of the cost risk (and are worth negotiating hardest on).</p>
         <div class="chart-wrap"><canvas id="chartProductPareto"></canvas></div>
         <div class="commentary pending" id="commentary-products-1">
           <span class="tag">Reading</span>
@@ -80,6 +80,11 @@
       </div>
       <div class="panel-block">
         <h2>Product detail</h2>
+        <p class="sub">Click any column header to sort. "Cost range" is the min–max cost of sale seen for that product across the period — if the two differ, its cost mapping changed at some point (check Cost_Mapping if the gap looks large); shown in red when that happens.</p>
+        <div class="product-controls">
+          <input type="text" id="productSearchInput" placeholder="Search product…">
+          <button type="button" id="productShowAllBtn" class="day-toggle">Show all</button>
+        </div>
         <div id="productTableWrap"></div>
         <div class="commentary pending" id="commentary-products-2">
           <span class="tag">Reading</span>
@@ -91,29 +96,55 @@
     <!-- PACKAGES -->
     <section id="packages" class="tab-panel">
       <div class="panel-block">
-        <h2>Margin by package</h2>
-        <p class="sub">Redeemed units only. Net revenue is ex-VAT (10%), COS is tSpoon recipe cost.</p>
-        <div id="packageMarginTableWrap"></div>
-        <div class="commentary pending" id="commentary-packages-margin">
+        <h2>Package scorecard</h2>
+        <p class="sub">All 6 packages, every dimension side by side — no more holding four separate tables in your head to compare one package's margin against its own breakage or cascade rate. Net revenue is ex-VAT (10%); breakage is read from Purch_raw + Rdmp_raw directly since an unredeemed token never appears in Consolidated.</p>
+        <div id="packageOverviewTableWrap"></div>
+        <div class="commentary pending" id="commentary-packages-overview">
           <span class="tag">Reading</span>
           AI-generated commentary — pending Phase 2.
         </div>
       </div>
 
       <div class="panel-block">
-        <h2>Breakage by package</h2>
-        <p class="sub">Units sold vs redeemed, from Purch_raw + Rdmp_raw directly (an unredeemed token never appears in Consolidated).</p>
-        <div id="breakageTableWrap"></div>
-        <div class="commentary pending" id="commentary-packages-breakage">
+        <h2>Margin vs breakage by package</h2>
+        <p class="sub">Bubble size = units sold. Bottom-left is the ideal quadrant: low breakage, high margin. Top-left means good margin but real money left unredeemed on the table.</p>
+        <div class="chart-wrap"><canvas id="chartPackageQuadrant"></canvas></div>
+        <div class="commentary pending" id="commentary-packages-quadrant">
           <span class="tag">Reading</span>
           AI-generated commentary — pending Phase 2.
         </div>
       </div>
 
       <div class="panel-block">
-        <h2>Breakage trend by event date</h2>
-        <div class="chart-wrap"><canvas id="chartBreakageTrend"></canvas></div>
-        <div class="commentary pending" id="commentary-packages-trend">
+        <h2>Cascade usage by package</h2>
+        <p class="sub">This is a different kind of loss than breakage above: the token IS redeemed, but for something cheaper than what was paid for (e.g. a DRINK pack redeemed as water). Not a missed sale — a customer who overpaid for what they actually drank. Grouped by full package (type + size), not just type; based on Square's real category for each item.</p>
+        <div class="chart-wrap"><canvas id="chartCascade"></canvas></div>
+        <div id="cascadeContributionWrap"></div>
+        <div class="commentary pending" id="commentary-packages-cascade">
+          <span class="tag">Reading</span>
+          AI-generated commentary — pending Phase 2.
+        </div>
+      </div>
+
+      <div class="panel-block">
+        <h2>Breakage by purchase window</h2>
+        <p class="sub">Does buying last-minute predict a lower redemption rate? Completed purchases, past events only. "Buckets" splits by package; "Day by day" pools all packages to show the actual shape of the curve instead of 3 coarse steps.</p>
+        <div class="hour-controls" id="windowBreakageToggle">
+          <button type="button" class="day-toggle active" data-view="buckets">Buckets (by package)</button>
+          <button type="button" class="day-toggle" data-view="daily">Day by day (all packages)</button>
+        </div>
+        <div class="chart-wrap"><canvas id="chartWindowBreakage"></canvas></div>
+        <div class="commentary pending" id="commentary-packages-window">
+          <span class="tag">Reading</span>
+          AI-generated commentary — pending Phase 2.
+        </div>
+      </div>
+
+      <div class="panel-block">
+        <h2>Package mix by location</h2>
+        <p class="sub">% share of each location's redemptions coming from each package — useful for staffing and stock by point of service.</p>
+        <div id="packageLocationHeatmapWrap"></div>
+        <div class="commentary pending" id="commentary-packages-location">
           <span class="tag">Reading</span>
           AI-generated commentary — pending Phase 2.
         </div>
@@ -121,10 +152,10 @@
 
       <div class="panel-block note-block">
         <h2>Not included yet</h2>
-        <p class="sub">These need data we don't have wired in yet — flagging instead of faking them:</p>
+        <p class="sub">Needs data we don't have wired in yet, or parked on purpose — flagging instead of faking it:</p>
         <ul>
           <li><strong>Effective discount vs bar price</strong> — needs full menu/bar price per product (Square catalog list price), not currently in Consolidated or Purch_raw.</li>
-          <li><strong>Cascade usage</strong> (e.g. DRINK 5 stepping down to beer/water) — needs each redeemed item_name categorized as spirit/cocktail vs beer vs water, which we don't have a mapping for yet.</li>
+          <li><strong>Breakage trend by event date</strong> — parked: returned null in production despite validated source code. The scorecard's "% Unredeemed" column already covers the core signal per package; revisit only if a time-series view becomes a specific ask.</li>
         </ul>
       </div>
     </section>
@@ -143,7 +174,24 @@
       </div>
       <div class="panel-block">
         <h2>Redemptions by hour of day</h2>
-        <p class="sub">Helps read bar throughput at peak times.</p>
+        <p class="sub">Package type toggles are the series — one line per active type (or one combined "All types" line if none are active). Day toggles are a filter on top of that: selected days are combined into whichever lines are showing, they don't add extra lines. No day selected = every day included.</p>
+        <div class="hour-controls">
+          <div class="day-toggles" id="hourDayToggles">
+            <button type="button" class="day-toggle" data-day="1">Mon</button>
+            <button type="button" class="day-toggle" data-day="2">Tue</button>
+            <button type="button" class="day-toggle" data-day="3">Wed</button>
+            <button type="button" class="day-toggle" data-day="4">Thu</button>
+            <button type="button" class="day-toggle" data-day="5">Fri</button>
+            <button type="button" class="day-toggle" data-day="6">Sat</button>
+            <button type="button" class="day-toggle" data-day="0">Sun</button>
+          </div>
+          <div class="day-toggles" id="hourTypeToggles">
+            <button type="button" class="day-toggle" data-type="ALL">All types</button>
+            <button type="button" class="day-toggle" data-type="DRINK">Drink</button>
+            <button type="button" class="day-toggle" data-type="BEER">Beer</button>
+            <button type="button" class="day-toggle" data-type="WATER">Water</button>
+          </div>
+        </div>
         <div class="chart-wrap"><canvas id="chartRedemptionHour"></canvas></div>
         <div class="commentary pending" id="commentary-behavior-hour">
           <span class="tag">Reading</span>
@@ -154,6 +202,11 @@
 
     <!-- DATA QUALITY -->
     <section id="quality" class="tab-panel">
+      <div class="panel-block">
+        <h2>Avg. cost of sale % by category</h2>
+        <p class="sub">Quality check, not a business view: cost/price resolution per <em>actual item served</em> (Square's real category), not per package. If BEER or WATER_SOFT's COS% suddenly jumps, drops to 0%, or goes above 100%, that's usually a break in cost or price mapping — not a real business shift.</p>
+        <div id="cosPctByCategoryWrap"></div>
+      </div>
       <div class="two-col">
         <div class="panel-block">
           <h2>cost_source by location</h2>
